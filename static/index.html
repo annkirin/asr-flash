@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASR Flash Tool</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #1a1b26;
+            --bg-card: #24283b;
+            --bg-log: #16161e;
+            --text-primary: #c0caf5;
+            --text-secondary: #565f89;
+            --accent-blue: #7aa2f7;
+            --accent-green: #9ece6a;
+            --accent-red: #f7768e;
+            --accent-yellow: #e0af68;
+            --accent-cyan: #7dcfff;
+            --border-color: #3b4261;
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+        }
+
+        .navbar-custom {
+            background: linear-gradient(135deg, var(--bg-card), #1f2335);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0.75rem 0;
+        }
+
+        .card-custom {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            transition: all 0.3s ease;
+        }
+
+        .card-custom:hover {
+            border-color: var(--accent-blue);
+            box-shadow: 0 4px 20px rgba(122, 162, 247, 0.1);
+        }
+
+        .card-header-custom {
+            background: transparent;
+            border-bottom: 1px solid var(--border-color);
+            padding: 1rem 1.25rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .card-body-custom {
+            padding: 1.25rem;
+        }
+
+        .log-container {
+            background: var(--bg-log);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            height: 320px;
+            overflow-y: auto;
+            font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            padding: 1rem;
+        }
+
+        .log-line {
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .log-line.info { color: var(--text-primary); }
+        .log-line.success { color: var(--accent-green); }
+        .log-line.error { color: var(--accent-red); }
+        .log-line.warn { color: var(--accent-yellow); }
+        .log-line.rx { color: var(--accent-cyan); }
+
+        .progress-custom {
+            height: 8px;
+            background: var(--bg-log);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .progress-bar-custom {
+            background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan));
+            transition: width 0.3s ease;
+        }
+
+        .btn-flash {
+            background: linear-gradient(135deg, var(--accent-blue), #5e7fd6);
+            border: none;
+            color: white;
+            font-weight: 600;
+            padding: 0.6rem 2rem;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+        }
+
+        .btn-flash:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 15px rgba(122, 162, 247, 0.3);
+            color: white;
+        }
+
+        .btn-flash:disabled {
+            opacity: 0.5;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn-cancel {
+            background: linear-gradient(135deg, var(--accent-red), #d65f7e);
+            border: none;
+            color: white;
+            font-weight: 600;
+            padding: 0.6rem 2rem;
+            border-radius: 8px;
+        }
+
+        .btn-cancel:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 15px rgba(247, 118, 142, 0.3);
+            color: white;
+        }
+
+        .btn-scan {
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            font-weight: 500;
+            padding: 0.6rem 1.5rem;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+        }
+
+        .btn-scan:hover {
+            border-color: var(--accent-blue);
+            color: var(--accent-blue);
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.35rem 0.8rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 500;
+        }
+
+        .status-idle {
+            background: rgba(86, 95, 137, 0.2);
+            color: var(--text-secondary);
+        }
+
+        .status-flashing {
+            background: rgba(122, 162, 247, 0.2);
+            color: var(--accent-blue);
+        }
+
+        .status-completed {
+            background: rgba(158, 206, 106, 0.2);
+            color: var(--accent-green);
+        }
+
+        .status-error {
+            background: rgba(247, 118, 142, 0.2);
+            color: var(--accent-red);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.active { background: var(--accent-blue); }
+        .status-dot.success { background: var(--accent-green); animation: none; }
+        .status-dot.error { background: var(--accent-red); animation: none; }
+        .status-dot.idle { background: var(--text-secondary); animation: none; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .device-info-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid rgba(59, 66, 97, 0.5);
+        }
+
+        .device-info-item:last-child {
+            border-bottom: none;
+        }
+
+        .device-info-label {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+        }
+
+        .device-info-value {
+            font-weight: 500;
+            font-family: 'Cascadia Code', monospace;
+            font-size: 0.85rem;
+        }
+
+        .input-custom {
+            background: var(--bg-log);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            border-radius: 8px;
+            padding: 0.6rem 1rem;
+            font-family: 'Cascadia Code', monospace;
+        }
+
+        .input-custom:focus {
+            background: var(--bg-log);
+            border-color: var(--accent-blue);
+            color: var(--text-primary);
+            box-shadow: 0 0 0 0.2rem rgba(122, 162, 247, 0.15);
+        }
+
+        .progress-text {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .spinner-grow-sm {
+            width: 0.5rem;
+            height: 0.5rem;
+        }
+
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-log);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-secondary);
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar-custom">
+        <div class="container">
+            <div class="d-flex align-items-center justify-content-between">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-cpu" style="font-size: 1.5rem; color: var(--accent-blue);"></i>
+                    <span class="fw-bold fs-5">ASR Flash Tool</span>
+                    <span class="text-secondary ms-2" style="font-size: 0.8rem;">v2.0</span>
+                </div>
+                <div id="statusBadge" class="status-badge status-idle">
+                    <span class="status-dot idle"></span>
+                    <span>待机</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container py-4">
+        <div class="row g-4">
+            <div class="col-md-4">
+                <div class="card card-custom h-100">
+                    <div class="card-header-custom">
+                        <i class="bi bi-usb-symbol" style="color: var(--accent-cyan);"></i>
+                        设备信息
+                    </div>
+                    <div class="card-body-custom">
+                        <div id="deviceInfo">
+                            <div class="text-center text-secondary py-3">
+                                <i class="bi bi-search" style="font-size: 2rem;"></i>
+                                <p class="mt-2 mb-0">点击"扫描设备"查找</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-8">
+                <div class="card card-custom">
+                    <div class="card-header-custom">
+                        <i class="bi bi-folder2-open" style="color: var(--accent-yellow);"></i>
+                        固件信息
+                    </div>
+                    <div class="card-body-custom">
+                        <div class="row align-items-end g-3">
+                            <div class="col">
+                                <label class="form-label text-secondary" style="font-size: 0.85rem;">固件目录</label>
+                                <input type="text" id="fwDir" class="form-control input-custom"
+                                       placeholder="/path/to/firmware (包含 firmware.bin)">
+                            </div>
+                            <div class="col-auto">
+                                <button class="btn btn-scan" onclick="scanDevices()">
+                                    <i class="bi bi-arrow-repeat"></i> 扫描设备
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row g-4 mt-2">
+            <div class="col-12">
+                <div class="card card-custom">
+                    <div class="card-body-custom">
+                        <div class="d-flex align-items-center justify-content-between mb-3">
+                            <div class="d-flex align-items-center gap-3">
+                                <button id="btnFlash" class="btn btn-flash" onclick="startFlash()">
+                                    <i class="bi bi-lightning-charge"></i> 开始烧录
+                                </button>
+                                <button id="btnCancel" class="btn btn-cancel" onclick="cancelFlash()" style="display: none;">
+                                    <i class="bi bi-stop-circle"></i> 取消
+                                </button>
+                            </div>
+                            <div id="progressInfo" class="progress-text" style="display: none;">
+                                <span id="progressDetail"></span>
+                            </div>
+                        </div>
+
+                        <div id="progressSection" style="display: none;">
+                            <div class="progress-custom mb-2">
+                                <div id="progressBar" class="progress-bar-custom" style="width: 0%"></div>
+                            </div>
+                            <div class="d-flex justify-content-between progress-text">
+                                <span id="progressText">0 / 0</span>
+                                <span id="progressPercent">0%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row g-4 mt-2">
+            <div class="col-12">
+                <div class="card card-custom">
+                    <div class="card-header-custom">
+                        <i class="bi bi-terminal" style="color: var(--accent-green);"></i>
+                        实时日志
+                        <button class="btn btn-sm btn-outline-secondary ms-auto" onclick="clearLog()" style="font-size: 0.75rem;">
+                            <i class="bi bi-trash3"></i> 清空
+                        </button>
+                    </div>
+                    <div class="card-body-custom p-0">
+                        <div id="logContainer" class="log-container">
+                            <div class="log-line info">等待操作...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let isFlashing = false;
+
+        function connectWS() {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${location.host}/ws`);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+            };
+
+            ws.onmessage = (e) => {
+                const msg = JSON.parse(e.data);
+                handleWSMessage(msg);
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket disconnected, reconnecting...');
+                setTimeout(connectWS, 2000);
+            };
+
+            ws.onerror = (err) => {
+                console.error('WebSocket error:', err);
+            };
+        }
+
+        function handleWSMessage(msg) {
+            switch (msg.type) {
+                case 'log':
+                    addLog(msg.data, 'info');
+                    break;
+                case 'progress':
+                    updateProgress(msg.data);
+                    break;
+                case 'status':
+                    updateStatus(msg.data);
+                    break;
+                case 'device':
+                    updateDeviceCard(msg.data);
+                    break;
+            }
+        }
+
+        function addLog(text, type = 'info') {
+            const container = document.getElementById('logContainer');
+            const line = document.createElement('div');
+
+            if (text.includes('[RX')) {
+                type = 'rx';
+            } else if (text.includes('错误') || text.includes('失败') || text.includes('FAIL')) {
+                type = 'error';
+            } else if (text.includes('成功') || text.includes('OKAY') || text.includes('完成')) {
+                type = 'success';
+            } else if (text.includes('WARN')) {
+                type = 'warn';
+            }
+
+            line.className = `log-line ${type}`;
+            line.textContent = `> ${text}`;
+            container.appendChild(line);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function updateProgress(data) {
+            const section = document.getElementById('progressSection');
+            const info = document.getElementById('progressInfo');
+            section.style.display = 'block';
+            info.style.display = 'block';
+
+            const percent = data.total > 0 ? Math.round((data.current / data.total) * 100) : 0;
+            document.getElementById('progressBar').style.width = `${percent}%`;
+            document.getElementById('progressText').textContent = `${data.current} / ${data.total}`;
+            document.getElementById('progressPercent').textContent = `${percent}%`;
+            document.getElementById('progressDetail').textContent = data.detail;
+        }
+
+        function updateStatus(data) {
+            isFlashing = false;
+            const badge = document.getElementById('statusBadge');
+            const btnFlash = document.getElementById('btnFlash');
+            const btnCancel = document.getElementById('btnCancel');
+
+            btnFlash.style.display = '';
+            btnFlash.disabled = false;
+            btnCancel.style.display = 'none';
+
+            switch (data.state) {
+                case 'completed':
+                    badge.className = 'status-badge status-completed';
+                    badge.innerHTML = '<span class="status-dot success"></span><span>完成</span>';
+                    addLog(`=== ${data.message} ===`, 'success');
+                    break;
+                case 'error':
+                    badge.className = 'status-badge status-error';
+                    badge.innerHTML = '<span class="status-dot error"></span><span>错误</span>';
+                    addLog(`错误: ${data.message}`, 'error');
+                    break;
+                case 'cancelled':
+                    badge.className = 'status-badge status-idle';
+                    badge.innerHTML = '<span class="status-dot idle"></span><span>已取消</span>';
+                    addLog('烧录已取消', 'warn');
+                    break;
+            }
+        }
+
+        function updateDeviceCard(data) {
+            const container = document.getElementById('deviceInfo');
+            const modeLabel = data.mode === 'download' ? '下载模式' : '正常模式';
+            const modeColor = data.mode === 'download' ? 'var(--accent-green)' : 'var(--accent-yellow)';
+
+            container.innerHTML = `
+                <div class="device-info-item">
+                    <span class="device-info-label">路径</span>
+                    <span class="device-info-value">${data.path}</span>
+                </div>
+                <div class="device-info-item">
+                    <span class="device-info-label">模式</span>
+                    <span class="device-info-value" style="color: ${modeColor}">${modeLabel}</span>
+                </div>
+                <div class="device-info-item">
+                    <span class="device-info-label">Bus:Addr</span>
+                    <span class="device-info-value">${data.bus}:${data.addr}</span>
+                </div>
+                ${data.serial ? `
+                <div class="device-info-item">
+                    <span class="device-info-label">序列号</span>
+                    <span class="device-info-value">${data.serial}</span>
+                </div>
+                ` : ''}
+            `;
+        }
+
+        async function scanDevices() {
+            addLog('扫描设备...', 'info');
+            try {
+                const resp = await fetch('/api/devices');
+                if (resp.ok) {
+                    const data = await resp.json();
+                    updateDeviceCard(data);
+                    addLog(`找到设备: ${data.path} (${data.mode})`, 'success');
+                } else {
+                    const err = await resp.json();
+                    addLog(`未找到设备: ${err.error}`, 'error');
+                }
+            } catch (e) {
+                addLog(`扫描失败: ${e.message}`, 'error');
+            }
+        }
+
+        async function startFlash() {
+            const fwDir = document.getElementById('fwDir').value.trim();
+            if (!fwDir) {
+                addLog('请先输入固件目录路径', 'error');
+                return;
+            }
+
+            isFlashing = true;
+            const btnFlash = document.getElementById('btnFlash');
+            const btnCancel = document.getElementById('btnCancel');
+            const badge = document.getElementById('statusBadge');
+
+            btnFlash.style.display = 'none';
+            btnCancel.style.display = '';
+            badge.className = 'status-badge status-flashing';
+            badge.innerHTML = '<span class="status-dot active"></span><span>烧录中</span>';
+
+            document.getElementById('progressSection').style.display = 'none';
+            document.getElementById('progressInfo').style.display = 'none';
+
+            addLog('开始烧录...', 'info');
+
+            try {
+                const resp = await fetch('/api/flash', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ firmware_dir: fwDir })
+                });
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    addLog(`启动失败: ${err.error}`, 'error');
+                    isFlashing = false;
+                    btnFlash.style.display = '';
+                    btnFlash.disabled = false;
+                    btnCancel.style.display = 'none';
+                    badge.className = 'status-badge status-idle';
+                    badge.innerHTML = '<span class="status-dot idle"></span><span>待机</span>';
+                }
+            } catch (e) {
+                addLog(`请求失败: ${e.message}`, 'error');
+                isFlashing = false;
+                btnFlash.style.display = '';
+                btnFlash.disabled = false;
+                btnCancel.style.display = 'none';
+            }
+        }
+
+        async function cancelFlash() {
+            try {
+                await fetch('/api/cancel', { method: 'POST' });
+            } catch (e) {
+                console.error('cancel failed:', e);
+            }
+        }
+
+        function clearLog() {
+            const container = document.getElementById('logContainer');
+            container.innerHTML = '<div class="log-line info">日志已清空</div>';
+        }
+
+        connectWS();
+
+        document.getElementById('fwDir').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') startFlash();
+        });
+    </script>
+</body>
+</html>

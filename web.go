@@ -26,6 +26,18 @@ type FlashRequest struct {
 	DevicePath  string `json:"device_path,omitempty"`
 }
 
+type ReadRequest struct {
+	Command    string `json:"command"`
+	DevicePath string `json:"device_path,omitempty"`
+}
+
+type ReadResponse struct {
+	Status   string `json:"status"`
+	Response string `json:"response,omitempty"`
+	Command  string `json:"command"`
+	Error    string `json:"error,omitempty"`
+}
+
 type FlashStatus struct {
 	State   string `json:"state"`
 	Message string `json:"message,omitempty"`
@@ -62,6 +74,7 @@ func StartWebServer(addr string) {
 
 	mux.HandleFunc("/api/devices", handleDevices)
 	mux.HandleFunc("/api/flash", handleFlash)
+	mux.HandleFunc("/api/read", handleRead)
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/cancel", handleCancel)
 	mux.HandleFunc("/ws", handleWebSocket)
@@ -262,6 +275,108 @@ func runFlash(req FlashRequest) {
 	ReleaseInterface(session.FD(), 1)
 	session.Close()
 	currentSession = nil
+}
+
+func handleRead(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flashMu.Lock()
+	if currentSession != nil {
+		flashMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(ReadResponse{Status: "error", Error: "烧录或读取正在进行中"})
+		return
+	}
+	flashMu.Unlock()
+
+	var req ReadRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Command == "" {
+		http.Error(w, "command required", http.StatusBadRequest)
+		return
+	}
+
+	var fd int
+	var err error
+
+	if req.DevicePath != "" {
+		fd, err = OpenUSBDevice(req.DevicePath)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ReadResponse{Status: "error", Error: fmt.Sprintf("打开设备失败: %v", err), Command: req.Command})
+			return
+		}
+	} else {
+		info, findErr := FindQuectelDevice()
+		if findErr != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(ReadResponse{Status: "error", Error: fmt.Sprintf("未找到设备: %v", findErr), Command: req.Command})
+			return
+		}
+
+		if info.Mode != "download" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(ReadResponse{Status: "error", Error: "设备不在下载模式，请先切换到下载模式", Command: req.Command})
+			return
+		}
+		fd, err = OpenUSBDevice(info.Path)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ReadResponse{Status: "error", Error: fmt.Sprintf("打开设备失败: %v", err), Command: req.Command})
+			return
+		}
+	}
+
+	session := NewSession(fd)
+	currentSession = session
+
+	err = ClaimInterface(session.FD(), 1)
+	if err != nil {
+		session.Close()
+		currentSession = nil
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ReadResponse{Status: "error", Error: fmt.Sprintf("声明接口失败: %v", err), Command: req.Command})
+		return
+	}
+
+	err = session.SmuxHandshake()
+	if err != nil {
+		ReleaseInterface(session.FD(), 1)
+		session.Close()
+		currentSession = nil
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ReadResponse{Status: "error", Error: fmt.Sprintf("SMUX 握手失败: %v", err), Command: req.Command})
+		return
+	}
+
+	rsp, err := session.SmuxSendCmd(req.Command)
+	ReleaseInterface(session.FD(), 1)
+	session.Close()
+	currentSession = nil
+
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ReadResponse{Status: "error", Error: fmt.Sprintf("命令失败: %v", err), Command: req.Command})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ReadResponse{Status: "ok", Response: rsp, Command: req.Command})
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {

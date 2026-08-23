@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -174,4 +175,34 @@ func (s *Session) startRxLoop() {
 
 func isExpectedResponse(text string) bool {
 	return len(text) >= 4 && (text[:4] == "OKAY" || text[:4] == "DATA" || text[:4] == "FAIL")
+}
+
+func (s *Session) SmuxRecvData(timeoutMs int) ([]byte, error) {
+	var received []byte
+
+	err := s.waitForResponse(timeoutMs, func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return len(s.cmdResponse) > 0 && (strings.HasPrefix(s.cmdResponse, "OKAY") ||
+			strings.HasPrefix(s.cmdResponse, "DATA") ||
+			strings.HasPrefix(s.cmdResponse, "FAIL"))
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	rsp := s.cmdResponse
+	s.mu.Unlock()
+
+	if strings.HasPrefix(rsp, "DATA") {
+		sizeStr := strings.TrimPrefix(rsp, "DATA")
+		size := 0
+		fmt.Sscanf(sizeStr, "%x", &size)
+		if size > 0 {
+			received = make([]byte, 0, size)
+		}
+	}
+
+	return received, nil
 }

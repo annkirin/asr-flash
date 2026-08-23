@@ -258,6 +258,25 @@
         ::-webkit-scrollbar-thumb:hover {
             background: var(--text-secondary);
         }
+
+        .nav-tabs .nav-link {
+            border: none;
+            color: var(--text-secondary);
+            font-weight: 500;
+            padding: 0.5rem 1rem;
+            transition: all 0.3s ease;
+        }
+
+        .nav-tabs .nav-link:hover {
+            color: var(--text-primary);
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        .nav-tabs .nav-link.active {
+            background: transparent;
+            color: var(--accent-blue);
+            border-bottom: 2px solid var(--accent-blue);
+        }
     </style>
 </head>
 <body>
@@ -299,20 +318,81 @@
             <div class="col-md-8">
                 <div class="card card-custom">
                     <div class="card-header-custom">
-                        <i class="bi bi-folder2-open" style="color: var(--accent-yellow);"></i>
-                        固件信息
+                        <ul class="nav nav-tabs card-header-tabs" style="border-bottom: none;">
+                            <li class="nav-item">
+                                <a class="nav-link active" href="#" onclick="switchTab('flash')" id="tabFlash" style="color: var(--accent-yellow);">
+                                    <i class="bi bi-folder2-open"></i> 固件烧录
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#" onclick="switchTab('read')" id="tabRead" style="color: var(--accent-cyan);">
+                                    <i class="bi bi-book"></i> 读取信息
+                                </a>
+                            </li>
+                        </ul>
                     </div>
                     <div class="card-body-custom">
-                        <div class="row align-items-end g-3">
-                            <div class="col">
-                                <label class="form-label text-secondary" style="font-size: 0.85rem;">固件目录</label>
-                                <input type="text" id="fwDir" class="form-control input-custom"
-                                       placeholder="/path/to/firmware (包含 firmware.bin)">
+                        <div id="flashPanel">
+                            <div class="row align-items-end g-3">
+                                <div class="col">
+                                    <label class="form-label text-secondary" style="font-size: 0.85rem;">固件目录</label>
+                                    <input type="text" id="fwDir" class="form-control input-custom"
+                                           placeholder="/path/to/firmware (包含 firmware.bin)">
+                                </div>
+                                <div class="col-auto">
+                                    <button class="btn btn-scan" onclick="scanDevices()">
+                                        <i class="bi bi-arrow-repeat"></i> 扫描设备
+                                    </button>
+                                </div>
                             </div>
-                            <div class="col-auto">
-                                <button class="btn btn-scan" onclick="scanDevices()">
-                                    <i class="bi bi-arrow-repeat"></i> 扫描设备
-                                </button>
+                        </div>
+                        <div id="readPanel" style="display: none;">
+                            <div class="mb-3">
+                                <label class="form-label text-secondary" style="font-size: 0.85rem;">快捷命令</label>
+                                <div class="d-flex flex-wrap gap-2">
+                                    <button class="btn btn-scan btn-sm" onclick="readCommand('getvar:all')">
+                                        <i class="bi bi-list-ul"></i> getvar:all
+                                    </button>
+                                    <button class="btn btn-scan btn-sm" onclick="readCommand('getvar:product')">
+                                        <i class="bi bi-box"></i> product
+                                    </button>
+                                    <button class="btn btn-scan btn-sm" onclick="readCommand('getvar:version')">
+                                        <i class="bi bi-tag"></i> version
+                                    </button>
+                                    <button class="btn btn-scan btn-sm" onclick="readCommand('getvar:serialno')">
+                                        <i class="bi bi-upc-scan"></i> serialno
+                                    </button>
+                                    <button class="btn btn-scan btn-sm" onclick="readCommand('getvar:max-download-size')">
+                                        <i class="bi bi-hdd"></i> max-download-size
+                                    </button>
+                                    <button class="btn btn-scan btn-sm" onclick="readCommand('oem flashinfo')">
+                                        <i class="bi bi-info-circle"></i> flashinfo
+                                    </button>
+                                    <button class="btn btn-scan btn-sm" onclick="readCommand('oem partition_list')">
+                                        <i class="bi bi-grid"></i> partition_list
+                                    </button>
+                                    <button class="btn btn-scan btn-sm" onclick="readCommand('oem boot_mode')">
+                                        <i class="bi bi-power"></i> boot_mode
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="row g-3">
+                                <div class="col">
+                                    <label class="form-label text-secondary" style="font-size: 0.85rem;">自定义命令</label>
+                                    <input type="text" id="customCmd" class="form-control input-custom"
+                                           placeholder="输入命令，如 getvar:product">
+                                </div>
+                                <div class="col-auto">
+                                    <button class="btn btn-flash" onclick="readCustomCommand()">
+                                        <i class="bi bi-play-circle"></i> 执行
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="readResult" class="mt-3" style="display: none;">
+                                <label class="form-label text-secondary" style="font-size: 0.85rem;">结果</label>
+                                <div class="log-container" style="height: 150px;">
+                                    <div id="readResultContent" class="log-line info"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -581,6 +661,68 @@
             const container = document.getElementById('logContainer');
             container.innerHTML = '<div class="log-line info">日志已清空</div>';
         }
+
+        function switchTab(tab) {
+            const flashPanel = document.getElementById('flashPanel');
+            const readPanel = document.getElementById('readPanel');
+            const tabFlash = document.getElementById('tabFlash');
+            const tabRead = document.getElementById('tabRead');
+
+            if (tab === 'flash') {
+                flashPanel.style.display = '';
+                readPanel.style.display = 'none';
+                tabFlash.classList.add('active');
+                tabRead.classList.remove('active');
+            } else {
+                flashPanel.style.display = 'none';
+                readPanel.style.display = '';
+                tabFlash.classList.remove('active');
+                tabRead.classList.add('active');
+            }
+        }
+
+        async function readCommand(cmd) {
+            addLog(`执行读取命令: ${cmd}`, 'info');
+            document.getElementById('readResult').style.display = 'block';
+            document.getElementById('readResultContent').textContent = '执行中...';
+            document.getElementById('readResultContent').className = 'log-line info';
+
+            try {
+                const resp = await fetch('/api/read', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ command: cmd })
+                });
+                const data = await resp.json();
+
+                if (data.status === 'ok') {
+                    document.getElementById('readResultContent').textContent = data.response;
+                    document.getElementById('readResultContent').className = 'log-line success';
+                    addLog(`命令成功: ${cmd}`, 'success');
+                } else {
+                    document.getElementById('readResultContent').textContent = `错误: ${data.error}`;
+                    document.getElementById('readResultContent').className = 'log-line error';
+                    addLog(`命令失败: ${data.error}`, 'error');
+                }
+            } catch (e) {
+                document.getElementById('readResultContent').textContent = `请求失败: ${e.message}`;
+                document.getElementById('readResultContent').className = 'log-line error';
+                addLog(`请求失败: ${e.message}`, 'error');
+            }
+        }
+
+        async function readCustomCommand() {
+            const cmd = document.getElementById('customCmd').value.trim();
+            if (!cmd) {
+                addLog('请输入命令', 'error');
+                return;
+            }
+            await readCommand(cmd);
+        }
+
+        document.getElementById('customCmd').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') readCustomCommand();
+        });
 
         connectWS();
 

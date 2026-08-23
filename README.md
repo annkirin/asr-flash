@@ -7,6 +7,7 @@ ASR/Quectel USB 模块固件烧录工具，支持 CLI 和 Web 界面。
 - **SMUX 协议**：实现 UABT 握手 + HELLO 协商 + ABOOT 命令/数据传输
 - **自动模式切换**：正常模式 → `AT+QDownLOAD=1` → 下载模式
 - **!CRANE! 固件解析**：支持 getvar/download/call/nop/reboot 命令
+- **读取设备信息**：支持 getvar 查询、OEM 命令执行（实验性）
 - **Web 界面**：Bootstrap 5 暗色主题，WebSocket 实时日志/进度推送
 - **CLI 模式**：原有命令行用法，完全兼容
 
@@ -64,6 +65,10 @@ OKAY
 # 浏览器打开 http://localhost:8080
 ```
 
+Web 界面支持两个 Tab：
+- **固件烧录**：选择固件目录，点击"开始烧录"
+- **读取信息**：快捷命令按钮或自定义命令执行
+
 ### CLI 模式
 
 ```bash
@@ -72,6 +77,14 @@ OKAY
 
 # 手动指定设备
 ./asr-flash /path/to/firmware_dir /dev/bus/usb/001/026
+
+# 读取设备信息（交互式）
+./asr-flash read
+
+# 执行单个读取命令
+./asr-flash read-cmd getvar:product
+./asr-flash read-cmd getvar:all
+./asr-flash read-cmd "oem flashinfo"
 ```
 
 ### Web API
@@ -80,6 +93,7 @@ OKAY
 |------|------|------|
 | GET | `/api/devices` | 扫描并返回设备信息 |
 | POST | `/api/flash` | 启动烧录 `{"firmware_dir":"..."}` |
+| POST | `/api/read` | 执行读取命令 `{"command":"getvar:product"}` |
 | GET | `/api/status` | 查询烧录状态 |
 | POST | `/api/cancel` | 取消正在进行的烧录 |
 | GET | `/ws` | WebSocket 实时日志/进度推送 |

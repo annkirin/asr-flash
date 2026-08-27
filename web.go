@@ -75,6 +75,9 @@ func StartWebServer(addr string) {
 	mux.HandleFunc("/api/devices", handleDevices)
 	mux.HandleFunc("/api/flash", handleFlash)
 	mux.HandleFunc("/api/read", handleRead)
+	mux.HandleFunc("/api/upload", handleUploadApi)
+	mux.HandleFunc("/api/acmports", handleACMports)
+	mux.HandleFunc("/api/verify-lcd", handleVerifyLCD)
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/cancel", handleCancel)
 	mux.HandleFunc("/ws", handleWebSocket)
@@ -82,7 +85,7 @@ func StartWebServer(addr string) {
 	staticFS, _ := fs.Sub(staticFiles, "static")
 	mux.Handle("/", http.FileServer(http.FS(staticFS)))
 
-	log.Printf("Web 界面启动: http://localhost%s", addr)
+	log.Printf("Web 界面启动: http://localhost%s  [v3.0 flash+debug合一 HeyPTT]", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
@@ -418,6 +421,65 @@ func handleCancel(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "cancelled"})
+}
+
+func handleACMports(w http.ResponseWriter, r *http.Request) {
+	ports, _ := filepath.Glob("/dev/ttyACM*")
+	if ports == nil { ports = []string{} }
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ports": ports})
+}
+func handleVerifyLCD(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost { http.Error(w, "method not allowed", 405); return }
+	flashMu.Lock()
+	if currentSession != nil { flashMu.Unlock(); w.WriteHeader(409); json.NewEncoder(w).Encode(map[string]string{"error":"任务进行中"}); return }
+	flashMu.Unlock()
+	// 异步执行 verify-lcd 上传
+	go func(){
+		port, err := FindACMPort()
+		if err != nil { broadcast(WSMessage{Type:"status", Data: FlashStatus{State:"error", Message: err.Error()}}); return }
+		broadcast(WSMessage{Type:"log", Data: fmt.Sprintf("Verify-LCD: 串口 %s", port)})
+		sess, err := NewUploadSession(port, func(f string, a ...interface{}){ broadcast(WSMessage{Type:"log", Data: fmt.Sprintf(f, a...)}) })
+		if err != nil { broadcast(WSMessage{Type:"status", Data: FlashStatus{State:"error", Message: err.Error()}}); return }
+		defer sess.Close()
+		if err := sess.EnterRawREPL(); err != nil { broadcast(WSMessage{Type:"status", Data: FlashStatus{State:"error", Message: err.Error()}}); return }
+		defer sess.ExitRawREPL()
+		src := "/home/ankirin/asr-flash/verify_lcd_160_128.py"
+		if _, err := os.Stat(src); err != nil { src = "/tmp/verify_lcd_160_128.py" }
+		broadcast(WSMessage{Type:"log", Data: "上传 verify_lcd -> /usr/main.py"})
+		if err := sess.UploadFile(src, "/usr/main.py"); err != nil { broadcast(WSMessage{Type:"status", Data: FlashStatus{State:"error", Message: err.Error()}}); return }
+		broadcast(WSMessage{Type:"status", Data: FlashStatus{State:"completed", Message: "Verify-LCD 已上传，请复位设备后拍照 (128/160轮播)"}})
+	}()
+	w.Header().Set("Content-Type","application/json"); json.NewEncoder(w).Encode(map[string]string{"status":"started"})
+}
+func handleUploadApi(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost { http.Error(w,"method not allowed",405); return }
+	flashMu.Lock()
+	if currentSession != nil { flashMu.Unlock(); w.WriteHeader(409); json.NewEncoder(w).Encode(map[string]string{"error":"任务进行中"}); return }
+	flashMu.Unlock()
+	if err := r.ParseMultipartForm(10<<20); err != nil { http.Error(w, err.Error(), 400); return }
+	file, hdr, err := r.FormFile("file")
+	if err != nil { http.Error(w, "file required", 400); return }
+	defer file.Close()
+	remote := r.FormValue("remote"); if remote=="" { remote="/usr/"+hdr.Filename }
+	tmp := filepath.Join(os.TempDir(), hdr.Filename)
+	out, _ := os.Create(tmp); defer os.Remove(tmp)
+	buf := make([]byte, 32768)
+	for { n, _ := file.Read(buf); if n==0 { break }; out.Write(buf[:n]) }
+	out.Close()
+	go func(tmpPath, remotePath string){
+		port, err := FindACMPort()
+		if err != nil { broadcast(WSMessage{Type:"status", Data: FlashStatus{State:"error", Message: err.Error()}}); return }
+		broadcast(WSMessage{Type:"log", Data: fmt.Sprintf("Upload: %s -> %s via %s", hdr.Filename, remotePath, port)})
+		sess, err := NewUploadSession(port, func(f string,a ...interface{}){ broadcast(WSMessage{Type:"log", Data: fmt.Sprintf(f,a...)}) })
+		if err != nil { broadcast(WSMessage{Type:"status", Data: FlashStatus{State:"error", Message: err.Error()}}); return }
+		defer sess.Close()
+		if err:=sess.EnterRawREPL(); err!=nil { broadcast(WSMessage{Type:"status", Data: FlashStatus{State:"error", Message: err.Error()}}); return }
+		defer sess.ExitRawREPL()
+		if err:=sess.UploadFile(tmpPath, remotePath); err!=nil { broadcast(WSMessage{Type:"status", Data: FlashStatus{State:"error", Message: err.Error()}}); return }
+		broadcast(WSMessage{Type:"status", Data: FlashStatus{State:"completed", Message: "上传完成: "+remotePath}})
+	}(tmp, remote)
+	w.Header().Set("Content-Type","application/json"); json.NewEncoder(w).Encode(map[string]string{"status":"started", "remote": remote})
 }
 
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {

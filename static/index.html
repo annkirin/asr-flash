@@ -286,7 +286,7 @@
                 <div class="d-flex align-items-center gap-2">
                     <i class="bi bi-cpu" style="font-size: 1.5rem; color: var(--accent-blue);"></i>
                     <span class="fw-bold fs-5">ASR Flash Tool</span>
-                    <span class="text-secondary ms-2" style="font-size: 0.8rem;">v2.0</span>
+                    <span class="text-secondary ms-2" style="font-size: 0.8rem;">v3.0 flash+debug</span>
                 </div>
                 <div id="statusBadge" class="status-badge status-idle">
                     <span class="status-dot idle"></span>
@@ -326,7 +326,17 @@
                             </li>
                             <li class="nav-item">
                                 <a class="nav-link" href="#" onclick="switchTab('read')" id="tabRead" style="color: var(--accent-cyan);">
-                                    <i class="bi bi-book"></i> 读取信息
+                                    <i class="bi bi-book"></i> 读取
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#" onclick="switchTab('upload')" id="tabUpload" style="color: var(--accent-green);">
+                                    <i class="bi bi-cloud-upload"></i> 上传
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#" onclick="switchTab('heyptt')" id="tabHey" style="color: var(--accent-blue);">
+                                    <i class="bi bi-broadcast"></i> HeyPTT
                                 </a>
                             </li>
                         </ul>
@@ -393,6 +403,40 @@
                                 <div class="log-container" style="height: 150px;">
                                     <div id="readResultContent" class="log-line info"></div>
                                 </div>
+                            </div>
+                        </div>
+                        <div id="uploadPanel" style="display:none;">
+                            <div class="d-flex gap-2 mb-3">
+                                <button class="btn btn-scan btn-sm" onclick="doVerifyLCD()"><i class="bi bi-eye"></i> 一键LCD验证 (128/160轮播)</button>
+                                <button class="btn btn-scan btn-sm" onclick="scanAcm()"><i class="bi bi-usb"></i> 扫描ACM</button>
+                                <span id="acmInfo" class="text-secondary" style="font-size:0.8rem; align-self:center;"></span>
+                            </div>
+                            <div class="row g-3">
+                                <div class="col">
+                                    <label class="form-label text-secondary" style="font-size:0.85rem;">选择文件上传到设备 /usr/</label>
+                                    <input type="file" id="uploadFile" class="form-control input-custom">
+                                </div>
+                                <div class="col">
+                                    <label class="form-label text-secondary" style="font-size:0.85rem;">远程路径</label>
+                                    <input type="text" id="remotePath" class="form-control input-custom" placeholder="/usr/main.py">
+                                </div>
+                                <div class="col-auto d-flex align-items-end">
+                                    <button class="btn btn-flash" onclick="doUpload()"><i class="bi bi-upload"></i> 上传</button>
+                                </div>
+                            </div>
+                            <div class="text-secondary mt-2" style="font-size:0.75rem;">提示：上传前请确保设备在正常模式 (ttyACM)，非下载模式。上传后需复位生效。CLI: <code>asr-flash upload &lt;file&gt;</code> | <code>asr-flash verify-lcd</code></div>
+                        </div>
+                        <div id="heyPanel" style="display:none;">
+                            <div class="alert" style="background:rgba(122,162,247,0.12); border:1px solid var(--border-color); color:var(--text-primary); font-size:0.85rem;">
+                                <b>HeyPTT MQTT+Opus</b> — 新加坡Broker直连，无CF。配置见 <code>docs/mqtt-opus-singapore.md</code> | 端口 <code>8883 TLS / 1883</code>
+                            </div>
+                            <div class="row g-2">
+                                <div class="col-6"><input id="heyBroker" class="form-control input-custom" placeholder="broker 如 ptt.yourdomain:8883" value=""></div>
+                                <div class="col-3"><input id="heyGroup" class="form-control input-custom" placeholder="组 gid" value="default"></div>
+                                <div class="col-3"><button class="btn btn-scan w-100" onclick="heyMock()">模拟推流(测试)</button></div>
+                            </div>
+                            <div class="d-flex gap-2 mt-2">
+                                <span class="text-secondary" style="font-size:0.75rem;">翻译 EN↔CN 在端侧设置可选，长按 ⏹⏹ 触发。此处仅调试回显，实际走 <code>heyptt/{uid}/translate</code> MQTT。</span>
                             </div>
                         </div>
                     </div>
@@ -663,23 +707,25 @@
         }
 
         function switchTab(tab) {
-            const flashPanel = document.getElementById('flashPanel');
-            const readPanel = document.getElementById('readPanel');
-            const tabFlash = document.getElementById('tabFlash');
-            const tabRead = document.getElementById('tabRead');
-
-            if (tab === 'flash') {
-                flashPanel.style.display = '';
-                readPanel.style.display = 'none';
-                tabFlash.classList.add('active');
-                tabRead.classList.remove('active');
-            } else {
-                flashPanel.style.display = 'none';
-                readPanel.style.display = '';
-                tabFlash.classList.remove('active');
-                tabRead.classList.add('active');
-            }
+            const panels={flash:document.getElementById('flashPanel'),read:document.getElementById('readPanel'),upload:document.getElementById('uploadPanel'),heyptt:document.getElementById('heyPanel')};
+            const tabs={flash:document.getElementById('tabFlash'),read:document.getElementById('tabRead'),upload:document.getElementById('tabUpload'),heyptt:document.getElementById('tabHey')};
+            Object.keys(panels).forEach(k=>{panels[k].style.display=(k===tab?'':'none'); tabs[k].classList.toggle('active',k===tab);});
         }
+        async function doVerifyLCD(){
+            addLog('一键LCD验证上传中...','info');
+            try{const r=await fetch('/api/verify-lcd',{method:'POST'}); const j=await r.json(); addLog(JSON.stringify(j),'info');}catch(e){addLog('失败:'+e.message,'error');}
+        }
+        async function scanAcm(){
+            try{const r=await fetch('/api/acmports'); const j=await r.json(); document.getElementById('acmInfo').textContent=(j.ports||[]).join(', ')||'无ttyACM'; addLog('ACM:'+JSON.stringify(j),'info');}catch(e){addLog(e.message,'error');}
+        }
+        async function doUpload(){
+            const f=document.getElementById('uploadFile').files[0]; const remote=document.getElementById('remotePath').value.trim()||('/usr/'+(f?f.name:'main.py'));
+            if(!f){addLog('请选择文件','error'); return;}
+            const fd=new FormData(); fd.append('file',f); fd.append('remote',remote);
+            addLog('上传 '+f.name+' -> '+remote+' ...','info');
+            try{const r=await fetch('/api/upload',{method:'POST', body:fd}); const j=await r.json(); addLog('上传已发起:'+JSON.stringify(j),'success');}catch(e){addLog('上传失败:'+e.message,'error');}
+        }
+        function heyMock(){ addLog('HeyPTT mock: 将向 heyptt/'+(document.getElementById('heyGroup').value||'default')+'/opus 推送模拟Opus (待实现)','warn'); }
 
         async function readCommand(cmd) {
             addLog(`执行读取命令: ${cmd}`, 'info');

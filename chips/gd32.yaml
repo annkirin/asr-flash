@@ -1,0 +1,79 @@
+# GD32 国产MCU 芯片配置
+# 用于国产对讲机
+
+name: "GD32"
+description: "GigaDevice GD32 系列国产ARM Cortex-M MCU"
+family: "gd32"
+version: "1.0"
+
+# USB 识别信息
+usb:
+  vid: "0x28E9"  # GigaDevice VID
+  pid: "0x0380"  # GD32 PID
+  class: 0x02
+
+# 支持的烧录方式
+flash_methods:
+  - type: "swd"
+    name: "SWD 调试烧录"
+    description: "通过SWD接口进行烧录"
+    protocol: "jlink"
+    requires_download_mode: false
+    swd_interface: "jlink"
+    
+  - type: "uart"
+    name: "UART 串口烧录"
+    description: "通过UART串口进行固件上传"
+    protocol: "isp"
+    requires_download_mode: false
+    baudrate: 115200
+
+# 分区配置
+partitions:
+  boot:
+    name: "bootloader"
+    description: "引导加载程序"
+    offset: 0x0
+    size: 0x8000  # 32KB
+    
+  rootfs:
+    name: "rootfs"
+    description: "根文件系统"
+    offset: 0x8000
+    size: 0x70000  # 448KB
+    
+  userdata:
+    name: "userdata"
+    description: "用户数据区"
+    offset: 0x78000
+    size: 0x88000  # 544KB
+
+# Flash 参数
+flash_params:
+  type: "internal-flash"
+  size: 0x100000  # 1MB
+  page_size: 1024
+  sector_size: 4096
+  erase_command: 0x20
+
+# 固件格式
+firmware:
+  format: "bin"
+  extension: ".bin"
+  description: "二进制格式固件"
+
+# AT 命令
+at_commands:
+  - command: "AT"
+    description: "测试AT通信"
+  - command: "AT+GMR"
+    description: "查询固件版本"
+
+# SMUX 命令
+smux_commands:
+  - command: "getvar:all"
+    description: "查询所有设备参数"
+  - command: "getvar:product"
+    description: "查询产品型号"
+  - command: "getvar:version"
+    description: "查询固件版本"

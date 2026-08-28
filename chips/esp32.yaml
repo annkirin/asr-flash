@@ -1,0 +1,84 @@
+# ESP32 WiFi 芯片配置
+# 用于WiFi对讲机
+
+name: "ESP32"
+description: "Espressif ESP32 系列WiFi/BLE SoC"
+family: "esp32"
+version: "1.0"
+
+# USB 识别信息
+usb:
+  vid: "0x303A"  # Espressif VID
+  pid: "0x1001"  # ESP32 PID
+  class: 0x02
+
+# 支持的烧录方式
+flash_methods:
+  - type: "uart"
+    name: "UART 串口烧录"
+    description: "通过UART串口进行固件上传"
+    protocol: "esptool"
+    requires_download_mode: true
+    baudrate: 921600
+    
+  - type: "jtag"
+    name: "JTAG 调试烧录"
+    description: "通过JTAG接口进行烧录"
+    protocol: "openocd"
+    requires_download_mode: false
+
+# 分区配置
+partitions:
+  boot:
+    name: "bootloader"
+    description: "引导加载程序"
+    offset: 0x1000
+    size: 0x3000  # 12KB
+    
+  rootfs:
+    name: "app"
+    description: "应用程序"
+    offset: 0x10000
+    size: 0x1F0000  # 1.9MB
+    
+  userdata:
+    name: "data"
+    description: "数据分区"
+    offset: 0x200000
+    size: 0x200000  # 2MB
+
+# Flash 参数
+flash_params:
+  type: "spi-nor"
+  size: 0x400000  # 4MB
+  page_size: 256
+  sector_size: 4096
+  erase_command: 0x20
+
+# 固件格式
+firmware:
+  format: "esp32"
+  extension: ".bin"
+  description: "ESP32 固件格式"
+
+# AT 命令
+at_commands:
+  - command: "AT"
+    description: "测试AT通信"
+  - command: "AT+GMR"
+    description: "查询固件版本"
+  - command: "AT+CWJAP"
+    description: "连接WiFi"
+  - command: "AT+CIFSR"
+    description: "查询IP地址"
+  - command: "AT+RST"
+    description: "软重启"
+
+# SMUX 命令
+smux_commands:
+  - command: "getvar:all"
+    description: "查询所有设备参数"
+  - command: "getvar:product"
+    description: "查询产品型号"
+  - command: "getvar:version"
+    description: "查询固件版本"

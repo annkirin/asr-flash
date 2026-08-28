@@ -27,10 +27,10 @@ func main() {
 	case "verify-lcd":
 		verifyLCDMode()
 	case "version", "--version", "-v":
-		fmt.Println("ASR Flash Tool v3.0 - flash+debug合一版 (MQTT+Opus HeyPTT)")
-		fmt.Println("  flash  : CRANE 固件烧录 (2ecc:3004)")
-		fmt.Println("  upload : Python 文件上传 (ttyACM REPL)")
-		fmt.Println("  verify-lcd: 一键上传 128/160 分辨率验证固件")
+		fmt.Println("ASR Flash Tool v4.0 - 对讲机固件烧录平台")
+		fmt.Println("  支持芯片: ASR CRANE, NXP Kinetis, GD32, ESP32")
+		fmt.Println("  烧录方式: SMUX USB, UART, SWD, JTAG")
+		fmt.Println("  高级功能: 批量烧录, 远程烧录, 脚本扩展")
 	case "help", "--help", "-h":
 		fmt.Println("用法:")
 		fmt.Println("  asr-flash                          Web模式 :8080 (烧录+读取+上传+调试)")

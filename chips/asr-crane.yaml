@@ -1,0 +1,109 @@
+# ASR CRANE 芯片配置
+# 用于对讲机固件烧录
+
+name: "ASR CRANE"
+description: "ASR Microelectronics CRANE 系列无线通信芯片"
+family: "asr-crane"
+version: "1.0"
+
+# USB 识别信息
+usb:
+  vid: "0x3353"  # ASR Microelectronics VID
+  pid: "0xa001"  # CRANE PID
+  class: 0x02     # CDC ACM 类
+
+# 支持的烧录方式
+flash_methods:
+  - type: "smux"
+    name: "SMUX USB 下载"
+    description: "通过SMUX协议进行USB下载"
+    protocol: "smux"
+    requires_download_mode: true
+    
+  - type: "uart"
+    name: "UART 串口烧录"
+    description: "通过UART串口进行固件上传"
+    protocol: "micropython"
+    requires_download_mode: false
+    baudrate: 115200
+    
+  - type: "swd"
+    name: "SWD 调试烧录"
+    description: "通过SWD接口进行烧录"
+    protocol: "openocd"
+    requires_download_mode: false
+    swd_interface: "cmsis-dap"
+
+# 分区配置
+partitions:
+  boot:
+    name: "bootloader"
+    description: "引导加载程序"
+    offset: 0x0
+    size: 0x10000  # 64KB
+    
+  rootfs:
+    name: "rootfs"
+    description: "根文件系统"
+    offset: 0x10000
+    size: 0x100000  # 1MB
+    
+  userdata:
+    name: "userdata"
+    description: "用户数据区"
+    offset: 0x110000
+    size: 0xF0000  # 960KB
+
+# Flash 参数
+flash_params:
+  type: "spi-nor"
+  size: 0x100000  # 1MB
+  page_size: 256
+  sector_size: 4096
+  erase_command: 0x20
+
+# 固件格式
+firmware:
+  format: "crane"
+  extension: ".bin"
+  description: "ASR CRANE 固件格式"
+
+# AT 命令
+at_commands:
+  - command: "AT"
+    description: "测试AT通信"
+  - command: "AT+GMR"
+    description: "查询固件版本"
+  - command: "AT+CSQ"
+    description: "查询信号强度"
+  - command: "AT+COPS?"
+    description: "查询运营商"
+  - command: "AT+CPIN?"
+    description: "查询SIM卡状态"
+  - command: "AT+GSN"
+    description: "查询IMEI号"
+  - command: "AT+CBC"
+    description: "查询电池电压"
+  - command: "AT+CFUN=1,1"
+    description: "重启模块"
+  - command: "AT+RST"
+    description: "软重启"
+
+# SMUX 命令
+smux_commands:
+  - command: "getvar:all"
+    description: "查询所有设备参数"
+  - command: "getvar:product"
+    description: "查询产品型号"
+  - command: "getvar:version"
+    description: "查询固件版本"
+  - command: "getvar:serialno"
+    description: "查询序列号"
+  - command: "getvar:flash-size"
+    description: "查询Flash容量"
+  - command: "oem flashinfo"
+    description: "查询Flash芯片信息"
+  - command: "oem partition_list"
+    description: "查询分区表"
+  - command: "oem boot_mode"
+    description: "查询启动模式"

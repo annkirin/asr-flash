@@ -68,6 +68,23 @@ func CloseUSBDevice(fd int) {
 	}
 }
 
+// USBDEVFS_RESET 复位 USB 设备，强制其重新枚举
+const usbdevfsReset = 21780 // _IO('U', 20)
+
+func ResetUSBDevice(path string) error {
+	fd, err := syscall.Open(path, syscall.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer syscall.Close(fd)
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd),
+		usbdevfsReset, 0)
+	if errno != 0 {
+		return fmt.Errorf("usb reset %s: %w", path, errno)
+	}
+	return nil
+}
+
 func ClaimInterface(fd, ifNum int) error {
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd),
 		usbdevfsClaimInterface, uintptr(unsafe.Pointer(&ifNum)))

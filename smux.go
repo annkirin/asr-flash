@@ -160,7 +160,7 @@ func (s *Session) SmuxHandshake() error {
 	s.mu.Lock()
 	s.parser = newSmuxParser()
 	s.mu.Unlock()
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	s.Logf("发送 HELLO (MTU=1024)...")
 	mtu := uint16(1024)
@@ -188,23 +188,24 @@ func (s *Session) SmuxHandshake() error {
 }
 
 func (s *Session) SmuxSendCmd(cmd string) (string, error) {
+	s.Logf("SmuxSendCmd: %s", cmd)
 	s.mu.Lock()
 	s.cmdResponse = ""
 	s.mu.Unlock()
 
 	frame := smuxBuildFrame(SMUX_FRAME_TYPE_ABOOT_CMD, []byte(cmd))
-	_, err := BulkWrite(s.FD(), EP_OUT, frame, 5000)
+	_, err := BulkWrite(s.FD(), EP_OUT, frame, 30000)
 	if err != nil {
 		return "", fmt.Errorf("send cmd: %w", err)
 	}
 
-	err = s.waitForResponse(120000, func() bool {
+	err = s.waitForResponse(300000, func() bool {
 		return strings.HasPrefix(s.cmdResponse, "OKAY") ||
 			strings.HasPrefix(s.cmdResponse, "DATA") ||
 			strings.HasPrefix(s.cmdResponse, "FAIL")
 	})
 	if err != nil {
-		return "", fmt.Errorf("wait response: %w", err)
+		return "", fmt.Errorf("wait response for cmd '%s': %w", cmd, err)
 	}
 
 	s.mu.Lock()
@@ -217,37 +218,39 @@ func (s *Session) SmuxSendCmd(cmd string) (string, error) {
 func (s *Session) SmuxSendData(data []byte) (string, error) {
 	chunkSize := 512
 	offset := 0
+	total := len(data)
 
-	for offset < len(data) {
+	for offset < total {
 		end := offset + chunkSize
-		if end > len(data) {
-			end = len(data)
+		if end > total {
+			end = total
 		}
 		chunk := data[offset:end]
 
 		frame := smuxBuildFrame(SMUX_FRAME_TYPE_ABOOT_DATA, chunk)
-		_, err := BulkWrite(s.FD(), EP_OUT, frame, 5000)
+		_, err := BulkWrite(s.FD(), EP_OUT, frame, 30000)
 		if err != nil {
-			return "", fmt.Errorf("send data chunk: %w", err)
+			return "", fmt.Errorf("send data chunk at offset %d: %w", offset, err)
 		}
 
 		offset = end
-		if offset < len(data) {
+		if offset < total {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
+	s.Logf("SmuxSendData: sent %d bytes, waiting for response...", total)
 
 	s.mu.Lock()
 	s.cmdResponse = ""
 	s.mu.Unlock()
 
-	err := s.waitForResponse(120000, func() bool {
+	err := s.waitForResponse(300000, func() bool {
 		return strings.HasPrefix(s.cmdResponse, "OKAY") ||
 			strings.HasPrefix(s.cmdResponse, "DATA") ||
 			strings.HasPrefix(s.cmdResponse, "FAIL")
 	})
 	if err != nil {
-		return "", fmt.Errorf("wait data response: %w", err)
+		return "", fmt.Errorf("wait data response (sent %d bytes): %w", total, err)
 	}
 
 	s.mu.Lock()
@@ -272,4 +275,11 @@ func (s *Session) SmuxWaitResponse(timeoutMs int) (string, error) {
 	s.mu.Unlock()
 
 	return rsp, nil
+}
+
+// waitForDeviceRehandshake 等待设备发送 HELLO_REPLY（预引导程序启动后重新握手）
+func (s *Session) waitForDeviceRehandshake(timeoutMs int) error {
+	return s.waitForResponse(timeoutMs, func() bool {
+		return strings.HasPrefix(s.cmdResponse, "HELLO_REPLY:")
+	})
 }

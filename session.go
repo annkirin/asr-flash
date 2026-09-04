@@ -19,6 +19,16 @@ type Session struct {
 	parser      *smuxParser
 	rxRunning   bool
 
+	// abortReason 记录设备异常信号（如 "[WARN: Aboot" / "[ERR : Exception"），
+	// 用于快速失败避免长时间等待超时
+	abortReason string
+
+	// 二进制数据接收（用于 flash:read 等读回操作）
+	dataBuffer []byte
+	dataCond   *sync.Cond
+	expectData bool
+	expectSize int
+
 	OnLog      func(msg string)
 	OnProgress func(current, total int, detail string)
 	OnComplete func(success bool, msg string)
@@ -30,8 +40,64 @@ func NewSession(fd int) *Session {
 		done: make(chan struct{}),
 	}
 	s.cmdCond = sync.NewCond(&s.mu)
+	s.dataCond = sync.NewCond(&s.mu)
 	s.parser = newSmuxParser()
 	return s
+}
+
+// BeginDataExpect 标记开始接收二进制数据，期望 totalBytes 字节
+func (s *Session) BeginDataExpect(totalBytes int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expectData = true
+	s.expectSize = totalBytes
+	s.dataBuffer = make([]byte, 0, totalBytes)
+	s.dataCond.Broadcast()
+}
+
+// ReceiveData 等待接收 expectSize 字节的二进制数据（含超时）
+func (s *Session) ReceiveData(timeoutMs int) ([]byte, error) {
+	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
+	for {
+		s.mu.Lock()
+		if !s.expectData {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("not expecting data")
+		}
+		if len(s.dataBuffer) >= s.expectSize {
+			data := s.dataBuffer
+			s.dataBuffer = nil
+			s.expectData = false
+			s.mu.Unlock()
+			return data, nil
+		}
+		s.mu.Unlock()
+
+		if time.Now().After(deadline) {
+			s.mu.Lock()
+			got := len(s.dataBuffer)
+			s.mu.Unlock()
+			return nil, fmt.Errorf("timeout waiting data: got %d/%d bytes", got, s.expectSize)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// appendData 追加接收到的数据块（由 rxLoop 调用）
+func (s *Session) appendData(data []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.expectData {
+		return
+	}
+	remaining := s.expectSize - len(s.dataBuffer)
+	if len(data) > remaining {
+		data = data[:remaining]
+	}
+	s.dataBuffer = append(s.dataBuffer, data...)
+	if len(s.dataBuffer) >= s.expectSize {
+		s.dataCond.Broadcast()
+	}
 }
 
 func (s *Session) Logf(format string, args ...interface{}) {
@@ -93,6 +159,12 @@ func (s *Session) waitForResponse(timeoutMs int, check func() bool) error {
 			s.mu.Unlock()
 			return nil
 		}
+		if s.abortReason != "" {
+			reason := s.abortReason
+			s.abortReason = ""
+			s.mu.Unlock()
+			return fmt.Errorf("device abort: %s", reason)
+		}
 		s.mu.Unlock()
 
 		if time.Now().After(deadline) {
@@ -145,13 +217,20 @@ func (s *Session) startRxLoop() {
 				}
 
 				switch ft {
-				case SMUX_FRAME_TYPE_STDIO:
-					text := string(payload)
-					if text == SMUX_PREAMBLE_UABT {
-						s.sendCmdResponse("UABT")
-					} else if isExpectedResponse(text) {
-						s.sendCmdResponse(text)
+case SMUX_FRAME_TYPE_STDIO:
+				text := string(payload)
+				if text == SMUX_PREAMBLE_UABT {
+					s.sendCmdResponse("UABT")
+				} else if isExpectedResponse(text) {
+					s.sendCmdResponse(text)
+				} else if strings.HasPrefix(text, "[WARN") || strings.HasPrefix(text, "[ERR") {
+					// 设备 bootloader 异常信号（如 "[WARN: Aboot"），标记快速失败
+					s.mu.Lock()
+					if s.abortReason == "" {
+						s.abortReason = text
 					}
+					s.mu.Unlock()
+				}
 
 				case SMUX_FRAME_TYPE_HELLO_REPLY:
 					mtu := uint16(0)
@@ -165,6 +244,10 @@ func (s *Session) startRxLoop() {
 					if isExpectedResponse(text) {
 						s.sendCmdResponse(text)
 					}
+
+				case SMUX_FRAME_TYPE_ABOOT_DATA:
+					// 二进制数据（读回分区时）
+					s.appendData(payload)
 
 				case SMUX_FRAME_TYPE_HEART_BEAT:
 				}

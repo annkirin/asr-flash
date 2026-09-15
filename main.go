@@ -17,6 +17,57 @@ import (
 // 设备 flasher 加载后报告 0x100000 (1MB)，此为实际限制
 var maxDownloadSize = 0x100000
 
+// checkpoint 相关函数：用于断点续传，记录已完成的 group 编号
+
+// getCheckpointPath 根据固件包名生成 checkpoint 文件路径
+// 例如: /tmp/asr-flash-heyptt-nvm-only.checkpoint
+func getCheckpointPath(firmwareName string) string {
+	return fmt.Sprintf("/tmp/asr-flash-%s.checkpoint", firmwareName)
+}
+
+// saveCheckpoint 保存已完成的 group 编号到文件
+// firmwareName: 固件包文件名（不含路径）
+// lastCompletedGroup: 最后成功完成的 group 编号
+func saveCheckpoint(firmwareName string, lastCompletedGroup int) {
+	checkpointPath := getCheckpointPath(firmwareName)
+	content := fmt.Sprintf("%d", lastCompletedGroup)
+	if err := os.WriteFile(checkpointPath, []byte(content), 0644); err != nil {
+		fmt.Printf("  [checkpoint] 保存失败: %v\n", err)
+	} else {
+		fmt.Printf("  [checkpoint] 已保存: group %d 完成 -> %s\n", lastCompletedGroup, checkpointPath)
+	}
+}
+
+// loadCheckpoint 从文件读取上次完成的 group 编号
+// 返回: group 编号，如果无 checkpoint 或读取失败返回 -1
+func loadCheckpoint(firmwareName string) int {
+	checkpointPath := getCheckpointPath(firmwareName)
+	data, err := os.ReadFile(checkpointPath)
+	if err != nil {
+		return -1 // 无 checkpoint，从头开始
+	}
+	var group int
+	if _, err := fmt.Sscanf(string(data), "%d", &group); err != nil {
+		return -1 // 解析失败，从头开始
+	}
+	return group
+}
+
+// clearCheckpoint 刷写成功后清除 checkpoint 文件
+func clearCheckpoint(firmwareName string) {
+	checkpointPath := getCheckpointPath(firmwareName)
+	os.Remove(checkpointPath) // 忽略错误（文件可能不存在）
+}
+
+// extractFirmwareName 从 zip 路径提取固件名（不含目录和扩展名）
+// 例如: /path/to/heyptt-nvm-only.zip -> heyptt-nvm-only
+func extractFirmwareName(zipPath string) string {
+	base := filepath.Base(zipPath) // 去掉目录
+	name := strings.TrimSuffix(base, ".zip")
+	name = strings.TrimSuffix(name, ".ZIP")
+	return name
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		webMode(":8080")
@@ -722,7 +773,14 @@ func parseFirmwareZipWithSparse(zipPath string, autoSparse bool) (map[string][]b
 	return files, commands, nil
 }
 
-func executeFlashCommands(session *Session, files map[string][]byte, commands []DownloadCommand) error {
+// executeFlashCommands 执行 download.json 中的所有命令
+// skipGroupsBelow: 跳过编号小于此值的 group（用于断点续传）
+//   - -1: 不跳过任何 group（从头开始）
+//   - 0: 跳过 group 0
+//   - 1: 跳过 group 0 和 1
+//   - ...
+// firmwareName: 固件包名称（用于 checkpoint 文件名，可为空）
+func executeFlashCommands(session *Session, files map[string][]byte, commands []DownloadCommand, skipGroupsBelow int, firmwareName string) error {
 	// 按组处理命令
 	groups := make(map[string][]DownloadCommand)
 	for _, cmd := range commands {
@@ -782,6 +840,14 @@ func executeFlashCommands(session *Session, files map[string][]byte, commands []
 	})
 
 	for _, groupKey := range groupKeys {
+		groupNum, _ := strconv.Atoi(groupKey)
+
+		// 断点续传：跳过已完成的 group
+		if skipGroupsBelow >= 0 && groupNum <= skipGroupsBelow {
+			fmt.Printf("\n=== Group %s (已跳过，上次已完成) ===\n", groupKey)
+			continue
+		}
+
 		cmds := groups[groupKey]
 
 		fmt.Printf("\n=== Group %s (%d commands) ===\n", groupKey, len(cmds))
@@ -1022,6 +1088,11 @@ func executeFlashCommands(session *Session, files map[string][]byte, commands []
 				fmt.Printf("  Unknown command: %s\n", cmd.Command)
 			}
 		}
+
+		// Group 完成，保存 checkpoint（用于断点续传）
+		if firmwareName != "" {
+			saveCheckpoint(firmwareName, groupNum)
+		}
 	}
 
 	fmt.Println("\n=== 烧录完成! ===")
@@ -1194,7 +1265,7 @@ func flashQuecPython(zipPath string) {
 		os.Exit(1)
 	}
 
-	if err := executeFlashCommands(nil, files, commands); err != nil {
+	if err := executeFlashCommands(nil, files, commands, -1, ""); err != nil {
 		fmt.Printf("烧录失败: %v\n", err)
 		os.Exit(1)
 	}
@@ -1253,7 +1324,7 @@ func flashLogicrom(zipPath string, appOnly bool, autoSparse bool) {
 		}
 	}
 
-	if err := executeFlashCommands(nil, files, commands); err != nil {
+	if err := executeFlashCommands(nil, files, commands, -1, ""); err != nil {
 		fmt.Printf("烧录失败: %v\n", err)
 		os.Exit(1)
 	}
@@ -1295,6 +1366,15 @@ func flashWatchMode(zipPath string, retry bool, intervalMs int, autoSparse bool,
 		os.Exit(1)
 	}
 	fmt.Printf("已解析固件包: %d 个文件, %d 条命令\n", len(files), len(commands))
+
+	// 断点续传：加载 checkpoint
+	firmwareName := extractFirmwareName(zipPath)
+	lastCompletedGroup := loadCheckpoint(firmwareName)
+	if lastCompletedGroup >= 0 {
+		fmt.Printf("✅ 发现 checkpoint: 上次完成到 group %d，将从下一个 group 继续\n", lastCompletedGroup)
+	} else {
+		fmt.Println("无 checkpoint，将从头开始刷写")
+	}
 	fmt.Println()
 
 	fmt.Println("等待设备进入下载模式 (2ecc:3004)...")
@@ -1349,17 +1429,21 @@ func flashWatchMode(zipPath string, retry bool, intervalMs int, autoSparse bool,
 				}
 			}
 
-			// 立即执行刷写
-			flashErr := executeFlashCommands(nil, files, commands)
+			// 立即执行刷写（传入 checkpoint 信息用于断点续传）
+			flashErr := executeFlashCommands(nil, files, commands, lastCompletedGroup, firmwareName)
 
 			if flashErr == nil {
 				fmt.Printf("\n[%s] ✅ === 刷写成功! (attempt %d) ===\n", time.Now().Format("15:04:05"), attempt)
+				// 刷写成功，清除 checkpoint
+				clearCheckpoint(firmwareName)
+				fmt.Println("已清除 checkpoint")
 				if !retry {
 					fmt.Println("监控完成。设备应已刷入固件。")
 					return
 				}
 				// retry 模式下，成功后继续监控（等待下次设备）
 				fmt.Println("持续监控中，等待设备再次出现...")
+				lastCompletedGroup = -1 // 重置 checkpoint，下次从头开始
 				time.Sleep(3 * time.Second)
 			} else {
 				fmt.Printf("\n[%s] ❌ 刷写失败: %v\n", time.Now().Format("15:04:05"), flashErr)
@@ -1384,10 +1468,12 @@ func flashWatchMode(zipPath string, retry bool, intervalMs int, autoSparse bool,
 					fmt.Println("等待设备重新出现，继续监控...")
 					time.Sleep(1 * time.Second)
 				}
+				// 刷新 checkpoint（executeFlashCommands 可能已保存了部分进度）
+				lastCompletedGroup = loadCheckpoint(firmwareName)
 			}
 		} else {
 			// 设备不在下载模式，等待
-			if time.Since(lastStatus) > 10*time.Second {
+			if time.Since(lastStatus) > 2*time.Second {
 				lastStatus = time.Now()
 				fmt.Printf("[%s] 等待设备进入下载模式...\n", time.Now().Format("15:04:05"))
 			}

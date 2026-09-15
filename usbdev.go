@@ -221,6 +221,13 @@ func FindQuectelDevice() (*DeviceInfo, error) {
 		return nil, err
 	}
 
+	// 环境变量指定设备号（忽略 BUSNUM，仅匹配 DEVNUM）
+	wantAddr := os.Getenv("ASR_DEVICE_ADDR")
+
+	// 第一遍：优先找 download 模式设备（2ecc），第二遍再找 normal
+	var normalDev *DeviceInfo
+	var normalFound bool
+
 	for _, e := range entries {
 		ueventPath := busDir + "/" + e.Name() + "/uevent"
 		data, err := os.ReadFile(ueventPath)
@@ -267,17 +274,41 @@ func FindQuectelDevice() (*DeviceInfo, error) {
 			mode = "download"
 		}
 
+		// 若指定了设备号，跳过不匹配的设备
+		if wantAddr != "" {
+			wantAddrNum, _ := strconv.Atoi(wantAddr)
+			if addr != wantAddrNum {
+				continue
+			}
+		}
+
 		serialPath := busDir + "/" + e.Name() + "/serial"
 		serial, _ := os.ReadFile(serialPath)
 		serialStr := strings.TrimSpace(string(serial))
 
-		return &DeviceInfo{
-			Path:   path,
-			Bus:    bus,
-			Addr:   addr,
-			Serial: serialStr,
-			Mode:   mode,
-		}, nil
+		if mode == "download" {
+			return &DeviceInfo{
+				Path:   path,
+				Bus:    bus,
+				Addr:   addr,
+				Serial: serialStr,
+				Mode:   mode,
+			}, nil
+		}
+		if !normalFound {
+			normalDev = &DeviceInfo{
+				Path:   path,
+				Bus:    bus,
+				Addr:   addr,
+				Serial: serialStr,
+				Mode:   mode,
+			}
+			normalFound = true
+		}
+	}
+
+	if normalFound {
+		return normalDev, nil
 	}
 
 	return nil, fmt.Errorf("no quectel device found")

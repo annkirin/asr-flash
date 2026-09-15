@@ -7,13 +7,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// maxDownloadSize 单次 download 的最大字节数（原厂 flasher = 0x1c0000 = 1.75MB）
-// 超过此限制的数据需要分段下载
-const maxDownloadSize = 0x1c0000
+// maxDownloadSize 单次 download 的最大字节数
+// 设备 flasher 加载后报告 0x100000 (1MB)，此为实际限制
+var maxDownloadSize = 0x100000
 
 func main() {
 	if len(os.Args) < 2 {
@@ -50,6 +52,8 @@ func main() {
 		readPartitionMode(os.Args[2], sizeHex, outFile)
 	case "upload":
 		uploadMode(os.Args[2:])
+	case "upload-read":
+		uploadReadMode()
 	case "verify-lcd":
 		verifyLCDMode()
 	case "flash-quecpython":
@@ -81,24 +85,28 @@ func main() {
 	case "flash-watch":
 		// 内置监控模式：轮询检测设备，一旦出现立即刷写，处理稍纵即逝的接口窗口
 		if len(os.Args) < 3 {
-			fmt.Println("用法: asr-flash flash-watch <firmware_zip> [--retry] [--interval-ms <ms>] [--no-sparse] [--timeout <秒>]")
+			fmt.Println("用法: asr-flash flash-watch <firmware_zip> [--retry] [--interval-ms <ms>] [--no-sparse] [--timeout <秒>] [-v]")
 			fmt.Println("示例: asr-flash flash-watch heyptt-nvm-only.zip")
 			fmt.Println("      asr-flash flash-watch heyptt-nvm-only.zip --retry         刷写失败后持续重试")
 			fmt.Println("      asr-flash flash-watch heyptt-nvm-only.zip --interval-ms 50  轮询间隔（默认50ms）")
 			fmt.Println("      asr-flash flash-watch heyptt-nvm-only.zip --timeout 180  监控超时(默认300秒)")
-			fmt.Println("      asr-flash flash-watch heyptt-full-cp.zip --no-sparse      用 raw 分段下载（cp.bin 等大文件）")
+			fmt.Println("      asr-flash flash-watch heyptt-nvm-only.zip --no-sparse      用 raw 分段下载（cp.bin 等大文件）")
+			fmt.Println("      asr-flash flash-watch heyptt-nvm-only.zip -v                详细模式，显示扫描状态")
 			os.Exit(1)
 		}
 		retry := false
 		intervalMs := 50
 		autoSparse := true
 		timeoutSec := 300 // 默认5分钟
+		verbose := false
 		for i := 2; i < len(os.Args); i++ {
 			switch os.Args[i] {
 			case "--retry":
 				retry = true
 			case "--no-sparse":
 				autoSparse = false
+			case "--verbose", "-v":
+				verbose = true
 			case "--interval-ms":
 				if i+1 < len(os.Args) {
 					fmt.Sscanf(os.Args[i+1], "%d", &intervalMs)
@@ -111,7 +119,7 @@ func main() {
 				}
 			}
 		}
-		flashWatchMode(os.Args[2], retry, intervalMs, autoSparse, timeoutSec)
+		flashWatchMode(os.Args[2], retry, intervalMs, autoSparse, timeoutSec, verbose)
 	case "flash-app":
 		if len(os.Args) < 3 {
 			fmt.Println("用法: asr-flash flash-app <app.bin>")
@@ -366,64 +374,49 @@ func readPartitionMode(partition, sizeHex, outFile string) {
 	}
 	time.Sleep(500 * time.Millisecond)
 
-	// 先加载 preboot + flasher 进入 flasher 阶段（读回需要 flasher 环境）
+	// 尝试加载 preboot + flasher 进入 flasher 阶段（读回需要 flasher 环境）
 	fmt.Println("\n进入 flasher 阶段...")
+	prebootLoaded := false
 	prebootData, err := os.ReadFile("/tmp/qpy_fw/extracted/preboot.img")
 	if err != nil {
-		fmt.Printf("读取 preboot.img 失败: %v\n", err)
-		os.Exit(1)
-	}
-	if err := abootDownload(session, prebootData); err != nil {
-		fmt.Printf("下载 preboot 失败: %v\n", err)
-		os.Exit(1)
-	}
-	rsp, err := session.SmuxSendCmd("verify")
-	if err != nil {
-		fmt.Printf("verify 失败: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("verify: %s\n", rsp)
-	rsp, err = session.SmuxSendCmd("call")
-	if err != nil {
-		fmt.Printf("call preboot 失败: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("call: %s\n", rsp)
-	time.Sleep(3 * time.Second)
-
-	// 重新握手（preboot 启动后）
-	if err := session.SmuxHandshake(); err != nil {
-		fmt.Printf("重握手失败: %v\n", err)
-		os.Exit(1)
+		fmt.Printf("读取 preboot.img 失败: %v (跳过)\n", err)
+	} else if err := abootDownload(session, prebootData); err != nil {
+		fmt.Printf("下载 preboot 失败: %v (跳过)\n", err)
+	} else {
+		rsp, _ := session.SmuxSendCmd("verify")
+		fmt.Printf("verify: %s\n", rsp)
+		rsp, _ = session.SmuxSendCmd("call")
+		fmt.Printf("call preboot: %s\n", rsp)
+		time.Sleep(3 * time.Second)
+		if err := session.SmuxHandshake(); err != nil {
+			fmt.Printf("重握手失败: %v\n", err)
+		} else {
+			prebootLoaded = true
+		}
 	}
 	time.Sleep(500 * time.Millisecond)
 
 	flasherData, err := os.ReadFile("/tmp/qpy_fw/extracted/flasher.img")
 	if err != nil {
 		fmt.Printf("读取 flasher.img 失败: %v\n", err)
-		os.Exit(1)
-	}
-	if err := abootDownload(session, flasherData); err != nil {
-		fmt.Printf("下载 flasher 失败: %v\n", err)
-		os.Exit(1)
-	}
-	rsp, err = session.SmuxSendCmd("verify")
-	if err != nil {
-		fmt.Printf("verify flasher 失败: %v\n", err)
-		os.Exit(1)
-	}
-	rsp, err = session.SmuxSendCmd("call")
-	if err != nil {
-		fmt.Printf("call flasher 失败: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("call flasher: %s\n", rsp)
-	time.Sleep(3 * time.Second)
-	if err := session.SmuxHandshake(); err != nil {
-		fmt.Printf("重握手失败: %v\n", err)
-		os.Exit(1)
+	} else {
+		if err := abootDownload(session, flasherData); err != nil {
+			fmt.Printf("下载 flasher 失败: %v\n", err)
+		} else {
+			rsp, _ := session.SmuxSendCmd("verify")
+			fmt.Printf("verify flasher: %s\n", rsp)
+			rsp, _ = session.SmuxSendCmd("call")
+			fmt.Printf("call flasher: %s\n", rsp)
+			time.Sleep(3 * time.Second)
+			if err := session.SmuxHandshake(); err != nil {
+				fmt.Printf("重握手失败: %v\n", err)
+			}
+		}
 	}
 	time.Sleep(500 * time.Millisecond)
+	if !prebootLoaded {
+		fmt.Println("注意: preboot/flasher 均未加载, 尝试直接发送 flash:read 命令...")
+	}
 
 	// 发送 flash:read:<partition> 读回命令
 	readCmd := fmt.Sprintf("flash:read:%s", partition)
@@ -442,7 +435,7 @@ func readPartitionMode(partition, sizeHex, outFile string) {
 	}
 
 	session.mu.Lock()
-	rsp = session.cmdResponse
+	rsp := session.cmdResponse
 	session.mu.Unlock()
 	fmt.Printf("读回响应: %s\n", rsp)
 
@@ -665,6 +658,7 @@ type DownloadCommand struct {
 	Partition      string      `json:"partition,omitempty"`
 	Weight         int         `json:"weight,omitempty"`
 	ProductionOnly bool        `json:"productionOnly,omitempty"`
+	VersionBootrom string      `json:"version-bootrom,omitempty"`
 }
 
 func parseFirmwareZip(zipPath string) (map[string][]byte, []DownloadCommand, error) {
@@ -775,15 +769,22 @@ func executeFlashCommands(session *Session, files map[string][]byte, commands []
 	}
 	fmt.Println("SMUX 握手成功!")
 
-	// 按组处理命令
-	for i := 0; ; i++ {
-		groupKey := fmt.Sprintf("%d", i)
-		cmds, ok := groups[groupKey]
-		if !ok {
-			break
-		}
+	// 按组处理命令（排序 group keys 避免跳组问题）
+	groupKeys := make([]string, 0, len(groups))
+	for k := range groups {
+		groupKeys = append(groupKeys, k)
+	}
+	// 按数字排序
+	sort.Slice(groupKeys, func(i, j int) bool {
+		a, _ := strconv.Atoi(groupKeys[i])
+		b, _ := strconv.Atoi(groupKeys[j])
+		return a < b
+	})
 
-		fmt.Printf("\n=== Group %d (%d commands) ===\n", i, len(cmds))
+	for _, groupKey := range groupKeys {
+		cmds := groups[groupKey]
+
+		fmt.Printf("\n=== Group %s (%d commands) ===\n", groupKey, len(cmds))
 
 		for _, cmd := range cmds {
 			switch cmd.Command {
@@ -852,13 +853,20 @@ func executeFlashCommands(session *Session, files map[string][]byte, commands []
 					fmt.Printf("    重握手成功\n")
 				}
 
-				// Step 6: query max-download-size to verify stage transition
-				rsp, err = session.SmuxSendCmd("getvar:max-download-size")
-				if err != nil {
-					fmt.Printf("    警告: getvar:max-download-size 失败: %v\n", err)
-				} else {
-					fmt.Printf("    max-download-size: %s\n", rsp)
+			// Step 6: query max-download-size to verify stage transition
+			rsp, err = session.SmuxSendCmd("getvar:max-download-size")
+			if err != nil {
+				fmt.Printf("    警告: getvar:max-download-size 失败: %v\n", err)
+			} else {
+				fmt.Printf("    max-download-size: %s\n", rsp)
+				// Parse hex value from "OKAY\thex_value" and update maxDownloadSize
+				if parts := strings.Split(rsp, "\t"); len(parts) == 2 {
+					if val, err := strconv.ParseUint(strings.TrimSpace(parts[1]), 0, 64); err == nil {
+						maxDownloadSize = int(val)
+						fmt.Printf("    更新 maxDownloadSize: %d bytes\n", maxDownloadSize)
+					}
 				}
+			}
 
 			case "partition":
 				// ABOOT 协议: download + data + partition
@@ -895,6 +903,61 @@ func executeFlashCommands(session *Session, files map[string][]byte, commands []
 				if err := erasePartition(session, cmd.Partition); err != nil {
 					fmt.Printf("    警告: 擦除 %s 失败: %v\n", cmd.Partition, err)
 					rehandshake(session)
+				}
+
+			case "upload":
+				// 读回分区：upload:<partition> → 设备回 DATA<size> → 接收数据
+				partition := cmd.Partition
+				fmt.Printf("  Upload(读回): %s (weight: %d)\n", partition, cmd.Weight)
+
+				uploadCmd := fmt.Sprintf("upload:%s", partition)
+				fmt.Printf("    %s...\n", uploadCmd)
+				rsp, err := session.SmuxSendCmd(uploadCmd)
+				if err != nil {
+					fmt.Printf("    警告: %s 失败: %v\n", uploadCmd, err)
+					continue
+				}
+				fmt.Printf("    %s 响应: %s\n", uploadCmd, rsp)
+
+				// 等待 DATA<size> 或 OKAY 或 FAIL
+				err = session.waitForResponse(15000, func() bool {
+					return strings.HasPrefix(session.cmdResponse, "DATA") ||
+						strings.HasPrefix(session.cmdResponse, "OKAY") ||
+						strings.HasPrefix(session.cmdResponse, "FAIL")
+				})
+				if err != nil {
+					fmt.Printf("    [upload] 等待响应超时: %v\n", err)
+					continue
+				}
+				session.mu.Lock()
+				rsp = session.cmdResponse
+				session.mu.Unlock()
+				fmt.Printf("    [upload] 读回响应: %s\n", rsp)
+
+				if strings.HasPrefix(rsp, "DATA") {
+					sizeStr := strings.TrimPrefix(rsp, "DATA")
+					var size int
+					fmt.Sscanf(sizeStr, "%x", &size)
+					fmt.Printf("    [upload] 数据大小: %d bytes (0x%x)\n", size, size)
+
+					session.BeginDataExpect(size)
+					data, err := session.ReceiveData(120000)
+					if err != nil {
+						fmt.Printf("    [upload] 接收数据失败: %v\n", err)
+						continue
+					}
+					fmt.Printf("    [upload] 收到 %d bytes\n", len(data))
+
+					outFile := fmt.Sprintf("/tmp/upload_%s.bin", partition)
+					if err := os.WriteFile(outFile, data, 0644); err != nil {
+						fmt.Printf("    [upload] 保存失败: %v\n", err)
+					} else {
+						fmt.Printf("    ✓ 分区已保存到: %s (%d bytes)\n", outFile, len(data))
+					}
+				} else if strings.HasPrefix(rsp, "FAIL") {
+					fmt.Printf("    [upload] 读回失败: %s\n", rsp)
+				} else {
+					fmt.Printf("    [upload] 未知响应: %s\n", rsp)
 				}
 
 			case "flash":
@@ -976,6 +1039,21 @@ func flashAppOnly(appPath string) {
 	}
 	fmt.Printf("App 大小: %d bytes\n", len(data))
 
+	// 在 app.bin 同目录查找 preboot.img / flasher.img（用于提升 max-download-size）
+	appDir := filepath.Dir(appPath)
+	prebootPath := filepath.Join(appDir, "preboot.img")
+	flasherPath := filepath.Join(appDir, "flasher.img")
+
+	var prebootData, flasherData []byte
+	if d, err := os.ReadFile(prebootPath); err == nil {
+		prebootData = d
+		fmt.Printf("找到 preboot.img: %d bytes\n", len(d))
+	}
+	if d, err := os.ReadFile(flasherPath); err == nil {
+		flasherData = d
+		fmt.Printf("找到 flasher.img: %d bytes\n", len(d))
+	}
+
 	fmt.Println("步骤 1: 扫描设备...")
 	info, err := FindQuectelDevice()
 	if err != nil {
@@ -1017,14 +1095,85 @@ func flashAppOnly(appPath string) {
 		os.Exit(1)
 	}
 	fmt.Println("SMUX 握手成功!")
-	// 握手后等待设备就绪
 	time.Sleep(500 * time.Millisecond)
 
-	fmt.Println("步骤 4: 发送 app.bin 到 user_app 分区...")
-	if err := sendImageDataWithRetry(session, data, 3); err != nil {
-		fmt.Printf("发送 app.bin 失败: %v\n", err)
+	// 加载 preboot → flasher（提升 max-download-size）
+	callImage := func(name string, imgData []byte) bool {
+		fmt.Printf("  加载 %s (%d bytes)...\n", name, len(imgData))
+		if err := abootDownload(session, imgData); err != nil {
+			fmt.Printf("    下载 %s 失败: %v\n", name, err)
+			return false
+		}
+		fmt.Println("    verify...")
+		rsp, err := session.SmuxSendCmd("verify")
+		if err != nil {
+			fmt.Printf("    verify %s 失败: %v\n", name, err)
+			return false
+		}
+		fmt.Printf("    verify: %s\n", rsp)
+		fmt.Println("    call...")
+		rsp, err = session.SmuxSendCmd("call")
+		if err != nil {
+			fmt.Printf("    call %s 失败: %v\n", name, err)
+			return false
+		}
+		fmt.Printf("    call: %s\n", rsp)
+		if strings.Contains(rsp, "ERR") || strings.Contains(rsp, "Exception") || strings.Contains(rsp, "FAIL") {
+			fmt.Printf("    [警告] %s 执行异常，等待恢复...\n", name)
+			time.Sleep(2 * time.Second)
+			session.SmuxHandshake()
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
+		fmt.Printf("    等待设备重新握手...\n")
+		err = session.waitForDeviceRehandshake(15000)
+		if err != nil {
+			fmt.Printf("    重握手超时: %v\n", err)
+		}
+		if err := session.SmuxHandshake(); err != nil {
+			fmt.Printf("    重握手失败: %v\n", err)
+		} else {
+			fmt.Println("    重握手成功")
+		}
+		time.Sleep(500 * time.Millisecond)
+		return true
+	}
+
+	if prebootData != nil {
+		fmt.Println("步骤 4a: 加载 preboot...")
+		callImage("preboot", prebootData)
+	}
+	if flasherData != nil {
+		fmt.Println("步骤 4b: 加载 flasher...")
+		callImage("flasher", flasherData)
+		// 查询提升后的 max-download-size
+		rsp, err := session.SmuxSendCmd("getvar:max-download-size")
+		if err == nil {
+			fmt.Printf("    max-download-size: %s\n", rsp)
+		}
+	}
+
+	fmt.Println("步骤 5: 下载 app.bin...")
+	if err := abootDownload(session, data); err != nil {
+		fmt.Printf("下载 app.bin 失败: %v\n", err)
 		os.Exit(1)
 	}
+
+	fmt.Println("步骤 6: flash:customer_app...")
+	rsp, err := session.SmuxSendCmd("flash:customer_app")
+	if err != nil {
+		fmt.Printf("flash 命令失败: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("flash 响应: %s\n", rsp)
+	if strings.HasPrefix(rsp, "FAIL") {
+		fmt.Printf("flash 失败: %s\n", rsp)
+		os.Exit(1)
+	}
+
+	fmt.Println("\n步骤 7: 重启设备...")
+	session.SmuxSendCmd("reboot")
+	time.Sleep(2 * time.Second)
 
 	fmt.Println("\n=== App 烧录完成! ===")
 }
@@ -1033,8 +1182,8 @@ func flashQuecPython(zipPath string) {
 	fmt.Printf("=== 烧录 QuecPython 固件: %s ===\n", zipPath)
 	fmt.Println()
 
-	// 原厂 QPY 固件含 raw cp.bin，需分段下载，禁用 sparse（flasher 接受 raw）
-	files, commands, err := parseFirmwareZipWithSparse(zipPath, false)
+	// bootloader.ubi 等分区的 flash: 命令要求 sparse 格式
+	files, commands, err := parseFirmwareZipWithSparse(zipPath, true)
 	if err != nil {
 		fmt.Printf("解析固件包失败: %v\n", err)
 		os.Exit(1)
@@ -1111,7 +1260,15 @@ func flashLogicrom(zipPath string, appOnly bool, autoSparse bool) {
 }
 
 // flashWatchMode 内置监控模式：轮询检测设备，设备一出现立即刷写固件包
-func flashWatchMode(zipPath string, retry bool, intervalMs int, autoSparse bool, timeoutSec int) {
+// 参数说明：
+//   - zipPath: 固件包路径（.zip 文件，包含 download.json 和固件文件）
+//   - retry: 刷写失败后是否持续重试（true=持续监控，false=失败后退出）
+//   - intervalMs: USB 扫描轮询间隔（毫秒），默认 50ms，越小响应越快但 CPU 占用越高
+//   - autoSparse: 是否自动将 ImageTool 格式的 sparse 转换为 Flasher 格式
+//   - timeoutSec: 监控超时时间（秒），0=永不超时，默认 300 秒
+//   - verbose: 是否输出详细日志（true=显示扫描状态和 USB 设备枚举详情）
+func flashWatchMode(zipPath string, retry bool, intervalMs int, autoSparse bool, timeoutSec int, verbose bool) {
+	// 输出工具版本和运行参数
 	fmt.Printf("=== ASR Flash Watch Mode ===\n")
 	fmt.Printf("固件包: %s\n", zipPath)
 	fmt.Printf("轮询间隔: %d ms\n", intervalMs)
@@ -1121,6 +1278,9 @@ func flashWatchMode(zipPath string, retry bool, intervalMs int, autoSparse bool,
 	}
 	if !autoSparse {
 		fmt.Printf("sparse 自动转换: 已禁用 (--no-sparse)\n")
+	}
+	if verbose {
+		fmt.Printf("详细模式: 已启用 (-v)\n")
 	}
 	fmt.Println()
 
@@ -1144,24 +1304,56 @@ func flashWatchMode(zipPath string, retry bool, intervalMs int, autoSparse bool,
 	attempt := 0
 	lastStatus := time.Now()
 	startTime := time.Now()
+	scanCount := 0
+	lastVerboseLog := time.Now()
+
 	for {
 		// 检查超时
 		if timeoutSec > 0 && time.Since(startTime) > time.Duration(timeoutSec)*time.Second {
 			fmt.Printf("\n[超时] 监控已运行 %d 秒，未检测到设备，退出。\n", timeoutSec)
 			os.Exit(1)
 		}
+
 		// 扫描设备
+		scanCount++
 		info, err := FindQuectelDevice()
+
+		// verbose 模式下，每 2 秒输出一次扫描状态
+		if verbose && time.Since(lastVerboseLog) > 2*time.Second {
+			lastVerboseLog = time.Now()
+			elapsed := int(time.Since(startTime).Seconds())
+			if err == nil && info != nil {
+				// 找到设备，输出设备详情
+				fmt.Printf("[%s] 扫描 #%d (已运行 %ds) - 发现设备: %s (Bus %d, Addr %d, %s)\n",
+					time.Now().Format("15:04:05"), scanCount, elapsed,
+					info.Path, info.Bus, info.Addr, info.Mode)
+			} else {
+				// 未找到设备，输出扫描统计
+				fmt.Printf("[%s] 扫描 #%d (已运行 %ds) - 等待设备...\n",
+					time.Now().Format("15:04:05"), scanCount, elapsed)
+			}
+		}
+
+		// 检测到下载模式设备
 		if err == nil && info != nil && info.Mode == "download" {
 			attempt++
 			ts := time.Now().Format("15:04:05")
-			fmt.Printf("\n[%s] 检测到下载模式设备 (%s)，开始刷写 (attempt %d)...\n", ts, info.Path, attempt)
+			fmt.Printf("\n[%s] ✅ 检测到下载模式设备 (%s)，开始刷写 (attempt %d)...\n", ts, info.Path, attempt)
+
+			// verbose 模式下输出完整的设备信息
+			if verbose {
+				fmt.Printf("  Bus: %d, Addr: %d\n", info.Bus, info.Addr)
+				fmt.Printf("  USB 路径: %s\n", info.Path)
+				if info.Serial != "" {
+					fmt.Printf("  序列号: %s\n", info.Serial)
+				}
+			}
 
 			// 立即执行刷写
 			flashErr := executeFlashCommands(nil, files, commands)
 
 			if flashErr == nil {
-				fmt.Printf("\n[%s] === 刷写成功! (attempt %d) ===\n", time.Now().Format("15:04:05"), attempt)
+				fmt.Printf("\n[%s] ✅ === 刷写成功! (attempt %d) ===\n", time.Now().Format("15:04:05"), attempt)
 				if !retry {
 					fmt.Println("监控完成。设备应已刷入固件。")
 					return
@@ -1170,7 +1362,7 @@ func flashWatchMode(zipPath string, retry bool, intervalMs int, autoSparse bool,
 				fmt.Println("持续监控中，等待设备再次出现...")
 				time.Sleep(3 * time.Second)
 			} else {
-				fmt.Printf("\n[%s] 刷写失败: %v\n", time.Now().Format("15:04:05"), flashErr)
+				fmt.Printf("\n[%s] ❌ 刷写失败: %v\n", time.Now().Format("15:04:05"), flashErr)
 				if !retry {
 					fmt.Printf("刷写失败，退出。如需自动重试请使用 --retry。\n")
 					os.Exit(1)
@@ -1219,10 +1411,9 @@ func sendImageData(session *Session, data []byte) error {
 func sendImageDataWithRetry(session *Session, data []byte, retries int) error {
 	var lastErr error
 	for attempt := 1; attempt <= retries; attempt++ {
-		rsp, err := session.SmuxSendCmd(fmt.Sprintf("download:%x", len(data)))
+		err := session.SmuxDownload(data)
 		if err != nil {
-			lastErr = fmt.Errorf("download command failed (attempt %d/%d): %v", attempt, retries, err)
-			// 尝试重握手
+			lastErr = fmt.Errorf("download failed (attempt %d/%d): %v", attempt, retries, err)
 			if attempt < retries {
 				fmt.Printf("    重试 %d/%d: 等待 3s 后重握手...\n", attempt, retries)
 				time.Sleep(3 * time.Second)
@@ -1234,33 +1425,6 @@ func sendImageDataWithRetry(session *Session, data []byte, retries int) error {
 				continue
 			}
 			return lastErr
-		}
-
-		if !strings.HasPrefix(rsp, "DATA") {
-			return fmt.Errorf("download command failed: %s", rsp)
-		}
-
-		// Give device a moment to prepare for data
-		time.Sleep(200 * time.Millisecond)
-
-		_, err = session.SmuxSendData(data)
-		if err != nil {
-			return fmt.Errorf("data send failed: %v", err)
-		}
-
-		rsp, err = session.SmuxWaitResponse(300000)
-		if err != nil {
-			lastErr = fmt.Errorf("wait response failed (attempt %d/%d): %v", attempt, retries, err)
-			if attempt < retries {
-				fmt.Printf("    重试 %d/%d: %v\n", attempt, retries, err)
-				time.Sleep(2 * time.Second)
-				continue
-			}
-			return lastErr
-		}
-
-		if !strings.HasPrefix(rsp, "OKAY") {
-			return fmt.Errorf("download failed: %s", rsp)
 		}
 
 		// preboot.img 是可执行代码，执行后设备会发送 HELLO_REPLY 重新握手
@@ -1326,35 +1490,7 @@ func erasePartition(session *Session, partition string) error {
 
 // abootDownload 执行 ABOOT 下载协议: download:<size> + data chunks
 func abootDownload(session *Session, data []byte) error {
-	// Step 1: send download command
-	cmd := fmt.Sprintf("download:%x", len(data))
-	fmt.Printf("    %s\n", cmd)
-	rsp, err := session.SmuxSendCmd(cmd)
-	if err != nil {
-		return fmt.Errorf("download command failed: %v", err)
-	}
-	if !strings.HasPrefix(rsp, "DATA") {
-		return fmt.Errorf("download command failed: %s", rsp)
-	}
-	fmt.Printf("    设备准备就绪，开始传输数据...\n")
-
-	// Step 2: send data in chunks
-	_, err = session.SmuxSendData(data)
-	if err != nil {
-		return fmt.Errorf("data send failed: %v", err)
-	}
-
-	// Step 3: wait for OKAY
-	rsp, err = session.SmuxWaitResponse(300000)
-	if err != nil {
-		return fmt.Errorf("wait OKAY failed: %v", err)
-	}
-	if !strings.HasPrefix(rsp, "OKAY") {
-		return fmt.Errorf("download failed: %s", rsp)
-	}
-	fmt.Printf("    数据传输完成 (OKAY)\n")
-
-	return nil
+	return session.SmuxDownload(data)
 }
 
 // flashSegmented 分段下载大数据并烧录到同一分区

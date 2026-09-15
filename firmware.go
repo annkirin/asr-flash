@@ -177,17 +177,9 @@ func DownloadCraneFirmware(s *Session, fw *Firmware) error {
 			s.Logf("  -> %s", rsp[:minInt(20, len(rsp))])
 
 			s.Logf("  发送 %d bytes 数据...", cmd.DataSize)
-			_, err = s.SmuxSendData(cmd.Data)
+			err = s.SmuxDownload(cmd.Data)
 			if err != nil {
 				return fmt.Errorf("数据发送失败: %v", err)
-			}
-
-			finalRsp, err := s.SmuxWaitResponse(10000)
-			if err != nil {
-				return fmt.Errorf("等待下载完成响应失败: %v", err)
-			}
-			if !strings.HasPrefix(finalRsp, "OKAY") {
-				return fmt.Errorf("下载完成响应异常: %s", finalRsp)
 			}
 			s.Logf("  下载完成: OKAY")
 		} else {

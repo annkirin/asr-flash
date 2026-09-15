@@ -241,6 +241,11 @@ func (s *Session) SmuxSendData(data []byte) (string, error) {
 	s.Logf("SmuxSendData: sent %d bytes, waiting for response...", total)
 
 	s.mu.Lock()
+	if s.cmdResponse != "" && (strings.HasPrefix(s.cmdResponse, "OKAY") || strings.HasPrefix(s.cmdResponse, "DATA") || strings.HasPrefix(s.cmdResponse, "FAIL")) {
+		rsp := s.cmdResponse
+		s.mu.Unlock()
+		return rsp, nil
+	}
 	s.cmdResponse = ""
 	s.mu.Unlock()
 
@@ -275,6 +280,92 @@ func (s *Session) SmuxWaitResponse(timeoutMs int) (string, error) {
 	s.mu.Unlock()
 
 	return rsp, nil
+}
+
+// SmuxDownload 原子化执行 download 流程：发送命令 → 等待 DATA → 发送数据 → 等待 OKAY
+// 避免 SmuxSendCmd 和 SmuxSendData 各自等待导致的双重等待竞态
+func (s *Session) SmuxDownload(data []byte) error {
+	// Step 1: 发送 download 命令
+	cmd := fmt.Sprintf("download:%x", len(data))
+	s.Logf("SmuxDownload: %s (%d bytes)", cmd, len(data))
+
+	s.mu.Lock()
+	s.cmdResponse = ""
+	s.mu.Unlock()
+
+	frame := smuxBuildFrame(SMUX_FRAME_TYPE_ABOOT_CMD, []byte(cmd))
+	_, err := BulkWrite(s.FD(), EP_OUT, frame, 30000)
+	if err != nil {
+		return fmt.Errorf("send download cmd: %w", err)
+	}
+
+	// Step 2: 等待设备回复 DATA（表示准备好接收数据）
+	err = s.waitForResponse(300000, func() bool {
+		return strings.HasPrefix(s.cmdResponse, "DATA") ||
+			strings.HasPrefix(s.cmdResponse, "OKAY") ||
+			strings.HasPrefix(s.cmdResponse, "FAIL")
+	})
+	if err != nil {
+		return fmt.Errorf("wait DATA response: %w", err)
+	}
+
+	s.mu.Lock()
+	rsp := s.cmdResponse
+	s.mu.Unlock()
+
+	if !strings.HasPrefix(rsp, "DATA") {
+		return fmt.Errorf("expected DATA, got: %s", rsp)
+	}
+	s.Logf("SmuxDownload: device ready (%s)", rsp)
+
+	// Step 3: 清除 DATA 响应，准备接收 OKAY
+	s.mu.Lock()
+	s.cmdResponse = ""
+	s.mu.Unlock()
+
+	// Step 4: 发送数据分块
+	chunkSize := 512
+	offset := 0
+	total := len(data)
+	for offset < total {
+		end := offset + chunkSize
+		if end > total {
+			end = total
+		}
+		chunk := data[offset:end]
+
+		dataFrame := smuxBuildFrame(SMUX_FRAME_TYPE_ABOOT_DATA, chunk)
+		_, err := BulkWrite(s.FD(), EP_OUT, dataFrame, 30000)
+		if err != nil {
+			return fmt.Errorf("send data chunk at offset %d: %w", offset, err)
+		}
+
+		offset = end
+		if offset < total {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	s.Logf("SmuxDownload: sent %d bytes, waiting for OKAY...", total)
+
+	// Step 5: 等待设备回复 OKAY（表示数据接收完成）
+	err = s.waitForResponse(300000, func() bool {
+		return strings.HasPrefix(s.cmdResponse, "OKAY") ||
+			strings.HasPrefix(s.cmdResponse, "FAIL")
+	})
+	if err != nil {
+		return fmt.Errorf("wait OKAY after data: %w", err)
+	}
+
+	s.mu.Lock()
+	rsp = s.cmdResponse
+	s.mu.Unlock()
+
+	if !strings.HasPrefix(rsp, "OKAY") {
+		return fmt.Errorf("download failed: %s", rsp)
+	}
+	s.Logf("SmuxDownload: OKAY")
+
+	return nil
 }
 
 // waitForDeviceRehandshake 等待设备发送 HELLO_REPLY（预引导程序启动后重新握手）
